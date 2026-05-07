@@ -1,0 +1,21 @@
+{
+  "reporting_currency": "USD",
+  "period": "2024-12",
+  "rates": {
+    "SGD": {
+      "closing_rate": 0.7407,
+      "average_rate": 0.7350,
+      "historical_rate": 0.7200
+    },
+    "EUR": {
+      "closing_rate": 1.0850,
+      "average_rate": 1.0820,
+      "historical_rate": 1.0500
+    },
+    "USD": {
+      "closing_rate": 1.0000,
+      "average_rate": 1.0000,
+      "historical_rate": 1.0000
+    }
+  }
+}

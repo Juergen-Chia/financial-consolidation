@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($python = \"d:\\\\anaconda3_10_24\\\\envs\\\\fin-consol\\\\python.exe\"; cd \"d:\\\\00-CLaude-Plugins\\\\financial-consolidation\"; & $python mock_data_generator.py)",
+      "PowerShell($python = \"d:\\\\anaconda3_10_24\\\\envs\\\\fin-consol\\\\python.exe\"; & $python -m pip install pandas openpyxl pydantic 2>&1 | Select-String \"Successfully installed|already satisfied|error\")"
+    ]
+  }
+}

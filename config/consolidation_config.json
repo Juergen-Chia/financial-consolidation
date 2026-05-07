@@ -1,0 +1,16 @@
+{
+  "group_name": "Parent Co Group",
+  "reporting_currency": "USD",
+  "reporting_period": "2024-12",
+  "parent_entity": "Parent Co",
+  "entities": [
+    { "name": "Parent Co", "currency": "USD", "ownership_pct": 100, "role": "parent" },
+    { "name": "Sub SGD",   "currency": "SGD", "ownership_pct": 100, "role": "subsidiary" },
+    { "name": "Sub USD",   "currency": "USD", "ownership_pct": 80,  "role": "subsidiary" },
+    { "name": "Sub EUR",   "currency": "EUR", "ownership_pct": 100, "role": "subsidiary" }
+  ],
+  "tolerance": {
+    "bs_balance_threshold_usd": 1.0,
+    "ico_mismatch_threshold_usd": 1.0
+  }
+}
