@@ -56,5 +56,8 @@ class COAMapping:
             return "Unknown"
         return str(row.iloc[0].get("classification", "Unknown"))
 
+    def get_classification(self, group_code: str) -> str:
+        return self.classification(group_code)
+
     def all_group_codes(self) -> list[str]:
         return list(self._df["group_code"].values)

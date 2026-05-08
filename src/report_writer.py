@@ -93,23 +93,24 @@ def _write_eq_tab(wb, tab_name, rows, entities):
 
 def _write_eliminations_tab(wb, tab_name, eliminations):
     ws = wb.create_sheet(tab_name)
-    headers = ["Reference", "Type", "From Entity", "To Entity", "Account Code", "Account Name", "Statement", "Amount USD", "Description"]
+    headers = ["Reference", "Type", "Source", "From Entity", "To Entity", "Account Code", "Account Name", "Statement", "Amount USD", "Description"]
     _write_header_row(ws, headers)
 
     for i, e in enumerate(eliminations, start=2):
         ws.cell(i, 1, e.reference).font = _NORMAL_FONT
         ws.cell(i, 2, e.elimination_type).font = _NORMAL_FONT
-        ws.cell(i, 3, e.from_entity).font = _NORMAL_FONT
-        ws.cell(i, 4, e.to_entity).font = _NORMAL_FONT
-        ws.cell(i, 5, e.account_code).font = _NORMAL_FONT
-        ws.cell(i, 6, e.account_name).font = _NORMAL_FONT
-        ws.cell(i, 7, e.statement).font = _NORMAL_FONT
-        amt_cell = ws.cell(i, 8, e.amount_usd)
+        ws.cell(i, 3, e.source).font = _NORMAL_FONT
+        ws.cell(i, 4, e.from_entity).font = _NORMAL_FONT
+        ws.cell(i, 5, e.to_entity).font = _NORMAL_FONT
+        ws.cell(i, 6, e.account_code).font = _NORMAL_FONT
+        ws.cell(i, 7, e.account_name).font = _NORMAL_FONT
+        ws.cell(i, 8, e.statement).font = _NORMAL_FONT
+        amt_cell = ws.cell(i, 9, e.amount_usd)
         amt_cell.number_format = _NUM_FORMAT
         amt_cell.font = _NORMAL_FONT
-        ws.cell(i, 9, e.description).font = _NORMAL_FONT
+        ws.cell(i, 10, e.description).font = _NORMAL_FONT
         if i % 2 == 0:
-            for col in range(1, 10):
+            for col in range(1, 11):
                 ws.cell(i, col).fill = _ALT_FILL
 
     _auto_width(ws, headers)

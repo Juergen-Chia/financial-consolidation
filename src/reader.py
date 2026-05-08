@@ -4,12 +4,12 @@ from pathlib import Path
 
 import openpyxl
 
-from src.models import AccountLine, EntityMeta, EquityLine, SubsidiaryData
+from src.models import AccountLine, EntityMeta, EquityLine, IntercompanyLine, SubsidiaryData, classify_account_statement
 from src.coa_mapper import COAMapping
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_TABS = {"BS", "IS", "CF", "EQ", "META"}
+REQUIRED_TABS = {"BS", "IS", "CF", "EQ", "META", "ICO"}
 CONSECUTIVE_BLANK_STOP = 3
 STATEMENT_TABS = {"BS", "IS", "CF"}
 
@@ -71,8 +71,9 @@ def read_subsidiary(path: Path, coa: COAMapping) -> SubsidiaryData:
     is_ = read_stmt("IS", "IS")
     cf = read_stmt("CF", "CF")
     eq = _read_eq_tab(wb["EQ"], meta.entity_name, path.name)
+    ico = _read_ico_tab(wb["ICO"], meta.entity_name, meta.currency, coa, path.name)
 
-    return SubsidiaryData(meta=meta, bs=bs, is_=is_, cf=cf, eq=eq, unmapped_accounts=unmapped)
+    return SubsidiaryData(meta=meta, bs=bs, is_=is_, cf=cf, eq=eq, unmapped_accounts=unmapped, ico=ico)
 
 
 def _read_meta_tab(ws, filename: str) -> EntityMeta:
@@ -128,6 +129,78 @@ def _read_statement_rows(ws, filename: str, tab_name: str) -> list[tuple[str, st
 
         results.append((code, name, amount))
     return results
+
+
+def _read_ico_tab(
+    ws,
+    entity_name: str,
+    entity_currency: str,
+    coa: COAMapping,
+    filename: str,
+) -> list[IntercompanyLine]:
+    """Read ICO tab. Columns by index: 0=account_no, 1=to_party, 2=account_type,
+    3=amount, 4=currency (optional), 5=description (optional)."""
+    lines: list[IntercompanyLine] = []
+    blank_count = 0
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        account_no_val = row[0] if len(row) > 0 else None
+        if account_no_val is None or str(account_no_val).strip() == "":
+            blank_count += 1
+            if blank_count >= CONSECUTIVE_BLANK_STOP:
+                break
+            continue
+
+        blank_count = 0
+        account_no = str(account_no_val).strip()
+        to_party = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+        account_type = str(row[2]).strip() if len(row) > 2 and row[2] is not None else ""
+
+        if not to_party or not account_type:
+            logger.warning(
+                "%s ICO tab: skipping row with blank to_party or account_type (account_no=%s)",
+                filename, account_no,
+            )
+            continue
+
+        try:
+            amount_local = float(row[3]) if len(row) > 3 and row[3] is not None else 0.0
+        except (ValueError, TypeError):
+            logger.warning(
+                "%s ICO tab: non-numeric amount for account_no '%s'; defaulting to 0",
+                filename, account_no,
+            )
+            amount_local = 0.0
+
+        ccy_val = row[4] if len(row) > 4 else None
+        currency = str(ccy_val).strip().upper() if ccy_val is not None and str(ccy_val).strip() else entity_currency
+
+        description = str(row[5]).strip() if len(row) > 5 and row[5] is not None else ""
+
+        group_code = coa.get_group_code(entity_name, account_no)
+        if group_code is None:
+            logger.warning(
+                "Unmapped ICO account '%s' in %s [ICO] — row skipped",
+                account_no, entity_name,
+            )
+            continue
+
+        statement = classify_account_statement(group_code)
+
+        lines.append(IntercompanyLine(
+            entity_name=entity_name,
+            account_no=account_no,
+            group_code=group_code,
+            to_party=to_party,
+            account_type=account_type,
+            amount_local=amount_local,
+            currency=currency,
+            description=description,
+            statement=statement,
+        ))
+
+    logger.info("ICO tab for %s: %d lines loaded", entity_name, len(lines))
+    return lines
 
 
 def _read_eq_tab(ws, entity_name: str, filename: str) -> list[EquityLine]:

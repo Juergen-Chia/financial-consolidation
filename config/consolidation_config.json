@@ -12,5 +12,10 @@
   "tolerance": {
     "bs_balance_threshold_usd": 1.0,
     "ico_mismatch_threshold_usd": 1.0
+  },
+  "ico_validation": {
+    "auto_derive_from_subsidiaries": true,
+    "timing_diff_threshold_usd": 5.0,
+    "require_bilateral_confirmation": true
   }
 }

@@ -4,9 +4,12 @@ import logging
 from collections import defaultdict
 from pathlib import Path
 
+import pandas as pd
+
 from src.coa_mapper import COAMapping
 from src.eliminations import EliminationEngine
 from src.fx_translator import FXTranslator
+from src.ico_detector import build_derived_matrix, validate_derived_matrix
 from src.models import (
     ConsolidatedData, EliminationEntry, SubsidiaryData,
     ValidationMessage,
@@ -36,7 +39,6 @@ class Consolidator:
 
         coa = COAMapping(self._coa_path)
         fx = FXTranslator(self._fx_config_path)
-        elim_engine = EliminationEngine(self._matrix_path, fx, config)
         validation_log: list[ValidationMessage] = []
 
         # Step 1: Discover and read
@@ -62,6 +64,22 @@ class Consolidator:
             translated_data[name] = translated
             fx_log.extend(log_entries)
 
+        # Step 3: Build elimination engine (auto-derive ICO pairs if configured)
+        ico_cfg = config.get("ico_validation", {})
+        if ico_cfg.get("auto_derive_from_subsidiaries", False):
+            derived_df = build_derived_matrix(translated_data, coa, config, fx)
+            file_matrix_df = pd.read_excel(self._matrix_path, dtype=str).fillna("")
+            merged_df, has_fatal = validate_derived_matrix(
+                derived_df, file_matrix_df, fx, config, validation_log
+            )
+            if has_fatal:
+                raise ConsolidationError(
+                    "ICO bilateral completeness check failed — see Validation tab for ICO_BILATERAL_MISSING"
+                )
+            elim_engine = EliminationEngine(self._matrix_path, fx, config, derived_df=merged_df)
+        else:
+            elim_engine = EliminationEngine(self._matrix_path, fx, config)
+
         # Step 3: ICO eliminations
         ico_entries = elim_engine.eliminate_intercompany(translated_data, validation_log)
 
@@ -70,7 +88,7 @@ class Consolidator:
 
         # Step 5: NCI
         nci_bs, nci_pl, nci_entries = elim_engine.calculate_nci(
-            translated_data, config, ico_entries + inv_entries
+            translated_data, config, ico_entries + inv_entries, coa=coa
         )
 
         all_eliminations = ico_entries + inv_entries + nci_entries

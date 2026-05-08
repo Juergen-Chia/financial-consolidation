@@ -1,0 +1,15 @@
+history-sessions/
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# Output (generated artefacts)
+# output/
+
+# Excel temp files
+~$*.xlsx

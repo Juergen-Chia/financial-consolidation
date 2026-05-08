@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.models import (
-    EliminationEntry, SubsidiaryData, ValidationMessage
+    EliminationEntry, SubsidiaryData, ValidationMessage, classify_account_statement,
 )
 from src.fx_translator import FXTranslator
 
@@ -21,13 +21,23 @@ def _ref(prefix: str) -> str:
 
 
 class EliminationEngine:
-    def __init__(self, matrix_path: Path, fx: FXTranslator, config: dict) -> None:
-        self._matrix = pd.read_excel(matrix_path, dtype=str).fillna("")
+    def __init__(
+        self,
+        matrix_path: Path,
+        fx: FXTranslator,
+        config: dict,
+        derived_df: "pd.DataFrame | None" = None,
+    ) -> None:
+        if derived_df is not None and not derived_df.empty:
+            self._matrix = derived_df
+            logger.info("Intercompany matrix loaded from derived ICO data: %d rows", len(self._matrix))
+        else:
+            self._matrix = pd.read_excel(matrix_path, dtype=str).fillna("")
+            logger.info("Intercompany matrix loaded from file: %d rows", len(self._matrix))
         self._fx = fx
         self._tolerance: float = float(
             config.get("tolerance", {}).get("ico_mismatch_threshold_usd", 1.0)
         )
-        logger.info("Intercompany matrix loaded: %d rows", len(self._matrix))
 
     def eliminate_intercompany(
         self,
@@ -78,15 +88,18 @@ class EliminationEngine:
 
             amt_a_local = float(row_a["amount_original_ccy"])
             amt_b_local = float(row_b["amount_original_ccy"])
-            ccy_a = row_a["currency"].strip().upper()
-            ccy_b = row_b["currency"].strip().upper()
+            ccy_a = str(row_a["currency"]).strip().upper()
+            ccy_b = str(row_b["currency"]).strip().upper()
 
             account_code_a = str(row_a["group_account_code"]).strip()
-            stmt_a = _classify_account_statement(account_code_a)
-            rate_type = "closing" if stmt_a == "BS" else "average"
+            account_code_b = str(row_b["group_account_code"]).strip()
+            stmt_a = classify_account_statement(account_code_a)
+            stmt_b = classify_account_statement(account_code_b)
+            rate_type_a = "closing" if stmt_a == "BS" else "average"
+            rate_type_b = "closing" if stmt_b == "BS" else "average"
 
-            amt_a_usd = self._fx.translate_amount(amt_a_local, ccy_a, rate_type)
-            amt_b_usd = self._fx.translate_amount(amt_b_local, ccy_b, rate_type)
+            amt_a_usd = self._fx.translate_amount(amt_a_local, ccy_a, rate_type_a)
+            amt_b_usd = self._fx.translate_amount(amt_b_local, ccy_b, rate_type_b)
 
             diff = abs(amt_a_usd - amt_b_usd)
             if diff > self._tolerance:
@@ -110,10 +123,16 @@ class EliminationEngine:
                     row_a["from_entity"], row_a["to_entity"], row_a["account_type"], amt_a_usd
                 )
 
-            elim_amount = round((amt_a_usd + amt_b_usd) / 2, 2)
-            elim_type = "ICO_PL" if stmt_a == "IS" else "ICO_BALANCE"
+            elim_type_a = "ICO_PL" if stmt_a == "IS" else "ICO_BALANCE"
+            elim_type_b = "ICO_PL" if stmt_b == "IS" else "ICO_BALANCE"
             ref = _ref("ICO")
+            source_a = str(row_a.get("_source", "MATRIX_FILE"))
+            source_b = str(row_b.get("_source", "MATRIX_FILE"))
+            # If either side is AUTO_DERIVED, mark both as AUTO_DERIVED
+            entry_source = "AUTO_DERIVED" if "AUTO_DERIVED" in (source_a, source_b) else "MATRIX_FILE"
 
+            # IAS 21.41: eliminate each side at its own translated amount.
+            # Never average. Book the residual FX difference to OCI (account 3200).
             entries.append(EliminationEntry(
                 reference=ref,
                 description=(
@@ -125,8 +144,9 @@ class EliminationEngine:
                 account_code=account_code_a,
                 account_name=str(row_a.get("account_type", "")),
                 statement=stmt_a,
-                amount_usd=elim_amount,
-                elimination_type=elim_type,
+                amount_usd=round(amt_a_usd, 2),
+                elimination_type=elim_type_a,
+                source=entry_source,
             ))
             entries.append(EliminationEntry(
                 reference=ref,
@@ -136,12 +156,33 @@ class EliminationEngine:
                 ),
                 from_entity=str(row_b["from_entity"]).strip(),
                 to_entity=str(row_b["to_entity"]).strip(),
-                account_code=str(row_b["group_account_code"]).strip(),
+                account_code=account_code_b,
                 account_name=str(row_b.get("account_type", "")),
-                statement=stmt_a,
-                amount_usd=elim_amount,
-                elimination_type=elim_type,
+                statement=stmt_b,
+                amount_usd=round(amt_b_usd, 2),
+                elimination_type=elim_type_b,
+                source=entry_source,
             ))
+
+            # IAS 21.41: route FX translation difference to OCI (account 3200).
+            # Convention: fx_diff = amt_a_usd - amt_b_usd (positive = credit to OCI).
+            # Only book for BS-side pairs; IS-level FX diffs stay within the IS aggregate.
+            fx_diff = round(amt_a_usd - amt_b_usd, 2)
+            if abs(fx_diff) > 0.005 and (stmt_a == "BS" or stmt_b == "BS"):
+                entries.append(EliminationEntry(
+                    reference=ref,
+                    description=(
+                        "FX translation difference on ICO elimination -> OCI per IAS 21.41"
+                    ),
+                    from_entity=str(row_a["from_entity"]).strip(),
+                    to_entity=str(row_a["to_entity"]).strip(),
+                    account_code="3200",
+                    account_name="Other Comprehensive Income (ICO FX Diff)",
+                    statement="BS",
+                    amount_usd=fx_diff,
+                    elimination_type="ICO_FX_OCI",
+                    source=entry_source,
+                ))
 
         logger.info("ICO eliminations: %d entries generated", len(entries))
         return entries
@@ -186,6 +227,7 @@ class EliminationEngine:
             statement="BS",
             amount_usd=total_parent_investment,
             elimination_type="INVESTMENT_EQUITY",
+            source="CONSOLIDATION_RULE",
         ))
         logger.info("Eliminating Parent 1700 total: %.2f USD", total_parent_investment)
 
@@ -216,6 +258,7 @@ class EliminationEngine:
                 statement="BS",
                 amount_usd=parent_share_sc,
                 elimination_type="INVESTMENT_EQUITY",
+                source="CONSOLIDATION_RULE",
             ))
             logger.info(
                 "SC elimination for %s (%.0f%%): %.2f USD",
@@ -243,6 +286,7 @@ class EliminationEngine:
         translated_data: dict[str, SubsidiaryData],
         consolidation_config: dict,
         all_eliminations: list[EliminationEntry],
+        coa=None,
     ) -> tuple[float, float, list[EliminationEntry]]:
         """
         NCI reclassification: NCI's share of sub equity is reclassified from
@@ -269,11 +313,25 @@ class EliminationEngine:
             ref = _ref("NCI")
             nci_total_bs = 0.0
 
+            # Apply elimination adjustments to get post-elimination equity balances
+            eq_post: dict[str, float] = {}
+            for line in sub.bs:
+                if line.group_code.startswith("3") and line.group_code != "3300":
+                    eq_post[line.group_code] = line.amount_usd
+            for entry in all_eliminations:
+                if (entry.from_entity == sub_name
+                        and entry.statement == "BS"
+                        and entry.elimination_type != "INVESTMENT_EQUITY"):
+                    code = entry.account_code
+                    if code in eq_post:
+                        eq_post[code] -= entry.amount_usd
+
             # Reclassify NCI's share of each equity line from its original code to 3300
             for line in sub.bs:
                 if not (line.group_code.startswith("3") and line.group_code not in ("3300",)):
                     continue
-                nci_share = round(nci_pct * line.amount_usd, 2)
+                post_elim_amount = eq_post.get(line.group_code, line.amount_usd)
+                nci_share = round(nci_pct * post_elim_amount, 2)
                 if nci_share == 0.0:
                     continue
                 nci_total_bs += nci_share
@@ -292,6 +350,7 @@ class EliminationEngine:
                     statement="BS",
                     amount_usd=nci_share,
                     elimination_type="NCI",
+                    source="CONSOLIDATION_RULE",
                 ))
                 # Add to NCI account 3300
                 nci_entries.append(EliminationEntry(
@@ -307,21 +366,42 @@ class EliminationEngine:
                     statement="BS",
                     amount_usd=-nci_share,   # negative = credit to 3300 (adds equity)
                     elimination_type="NCI",
+                    source="CONSOLIDATION_RULE",
                 ))
 
             total_nci_bs += nci_total_bs
 
-            # NCI in P&L = NCI% * subsidiary net profit (income - expenses)
-            income = sum(
-                l.amount_usd for l in sub.is_
-                if l.group_code.startswith("4") or l.group_code == "6300"
-            )
-            expenses = sum(
-                l.amount_usd for l in sub.is_
-                if l.group_code.startswith("5")
-                or l.group_code in ("6100", "6200", "6400", "6500")
-            )
-            net_profit = income - expenses
+            # NCI in P&L = NCI% * subsidiary post-ICO-elimination net profit
+            if coa is not None:
+                net_profit = sum(
+                    l.amount_usd if coa.get_classification(l.group_code) == "Income"
+                    else -l.amount_usd
+                    for l in sub.is_
+                )
+            else:
+                income = sum(
+                    l.amount_usd for l in sub.is_
+                    if l.group_code.startswith("4") or l.group_code == "6300"
+                )
+                expenses = sum(
+                    l.amount_usd for l in sub.is_
+                    if l.group_code.startswith("5")
+                    or l.group_code in ("6100", "6200", "6400", "6500")
+                )
+                net_profit = income - expenses
+
+            # Adjust for ICO IS eliminations so NCI sees post-elimination profit
+            for entry in all_eliminations:
+                if entry.from_entity == sub_name and entry.statement == "IS" and entry.elimination_type == "ICO_PL":
+                    if coa is not None:
+                        cls = coa.get_classification(entry.account_code)
+                        net_profit -= entry.amount_usd if cls == "Income" else -entry.amount_usd
+                    else:
+                        if entry.account_code.startswith("4") or entry.account_code == "6300":
+                            net_profit -= entry.amount_usd
+                        else:
+                            net_profit += entry.amount_usd
+
             nci_pl = round(nci_pct * net_profit, 2)
             total_nci_pl += nci_pl
 
@@ -333,13 +413,3 @@ class EliminationEngine:
         return total_nci_bs, total_nci_pl, nci_entries
 
 
-def _classify_account_statement(group_code: str) -> str:
-    try:
-        code_int = int(group_code)
-    except (ValueError, TypeError):
-        return "BS"
-    if 4000 <= code_int <= 6999:
-        return "IS"
-    if 7000 <= code_int <= 8999:
-        return "CF"
-    return "BS"

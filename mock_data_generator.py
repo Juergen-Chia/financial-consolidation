@@ -25,6 +25,7 @@ Design notes:
 """
 
 from pathlib import Path
+from typing import Optional
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
@@ -113,17 +114,14 @@ def write_coa_mapping():
 # Intercompany Matrix
 # ---------------------------------------------------------------------------
 
-ICO_ROWS = [
+# Override-only rows: relationships NOT covered by any ICO tab.
+# The Trade Receivable and IC Loan pairs are now declared in ICO tabs.
+# Only the Dividend arrangement (approved manual override) remains here.
+# account_type must be identical on both sides for bilateral matching.
+ICO_MATRIX_OVERRIDE_ROWS = [
     # from_entity, to_entity, account_type, group_account_code, amount_original_ccy, currency, side
-    ("Sub SGD",   "Parent Co", "Receivable",   "1200", 50000, "SGD", "asset"),
-    ("Parent Co", "Sub SGD",   "Receivable",   "2100", 50000, "SGD", "liability"),
-    ("Sub USD",   "Sub EUR",   "IC Revenue",   "4100", 30000, "USD", "income"),
-    ("Sub EUR",   "Sub USD",   "IC Revenue",   "5100", 30000, "USD", "expense"),
-    # Interco loan: Parent lent 100,000 SGD to Sub SGD.
-    # Parent records asset (1200) in USD = 100,000 SGD x closing 0.7407 = 74,070 USD.
-    # Both sides in SGD so elimination translates identically (no FX mismatch).
-    ("Parent Co", "Sub SGD",   "Interco Loan", "1200", 100000, "SGD", "asset"),
-    ("Sub SGD",   "Parent Co", "Interco Loan", "2300", 100000, "SGD", "liability"),
+    ("Parent Co", "Sub SGD", "Dividend", "2500", 10000, "USD", "liability"),
+    ("Sub SGD",   "Parent Co", "Dividend", "1100", 10000, "USD", "asset"),
 ]
 
 
@@ -133,7 +131,7 @@ def write_intercompany_matrix():
     ws.title = "ICO Matrix"
     headers = ["from_entity", "to_entity", "account_type", "group_account_code", "amount_original_ccy", "currency", "side"]
     ws.append(headers)
-    for row in ICO_ROWS:
+    for row in ICO_MATRIX_OVERRIDE_ROWS:
         ws.append(list(row))
     _bold_header(ws)
     wb.save(DATA_DIR / "intercompany_matrix.xlsx")
@@ -231,6 +229,15 @@ def write_parent_co():
         ("Other Comprehensive Income",      0,      0,       0),
     ]
 
+    # ICO tab: local account codes matching parent_co_code column in COA
+    # Parent Co BS shows 2100 IC Payable to Sub SGD for trade (Parent owes Sub SGD)
+    # and 1200 IC Loan Receivable from Sub SGD (Parent lent to Sub SGD)
+    parent_ico = [
+        # account_no, to_party, account_type, amount, currency, description
+        ("2100", "Sub SGD", "Trade Receivable", 50000,  "SGD", "Q4 goods"),
+        ("1200", "Sub SGD", "IC Loan",         100000, "SGD", "Facility drawdown"),
+    ]
+
     _write_subsidiary(
         SUBS_DIR / "parent_co.xlsx",
         entity_name="Parent Co",
@@ -242,6 +249,7 @@ def write_parent_co():
         cf_rows=cf,
         eq_rows=eq,
         local_col="parent_co_code",
+        ico_rows=parent_ico,
     )
     print("  parent_co.xlsx created")
 
@@ -351,6 +359,14 @@ def write_sub_sgd():
         ("Other Comprehensive Income",      0,     0,       0),
     ]
 
+    # ICO tab: local account codes matching sub_sgd_code column in COA
+    # 120 = Intercompany Receivables, 230 = Long-term Borrowings
+    sgd_ico = [
+        # account_no, to_party, account_type, amount, currency, description
+        ("120", "Parent Co", "Trade Receivable", 50000,  "SGD", "Q4 goods"),
+        ("230", "Parent Co", "IC Loan",         100000, "SGD", "Facility drawdown"),
+    ]
+
     _write_subsidiary(
         SUBS_DIR / "sub_sgd.xlsx",
         entity_name="Sub SGD",
@@ -362,6 +378,7 @@ def write_sub_sgd():
         cf_rows=cf,
         eq_rows=eq,
         local_col="sub_sgd_code",
+        ico_rows=sgd_ico,
     )
     print("  sub_sgd.xlsx created")
 
@@ -441,6 +458,13 @@ def write_sub_usd():
         ("Other Comprehensive Income",      0,       0,      0),
     ]
 
+    # ICO tab: local account codes matching sub_usd_code column in COA
+    # IC-REV = Intercompany Revenue (sub_usd_code)
+    usd_ico = [
+        # account_no, to_party, account_type, amount, currency, description
+        ("IC-REV", "Sub EUR", "IC Revenue/COGS", 30000, "USD", "Services Q4"),
+    ]
+
     _write_subsidiary(
         SUBS_DIR / "sub_usd.xlsx",
         entity_name="Sub USD",
@@ -452,6 +476,7 @@ def write_sub_usd():
         cf_rows=cf,
         eq_rows=eq,
         local_col="sub_usd_code",
+        ico_rows=usd_ico,
     )
     print("  sub_usd.xlsx created")
 
@@ -533,6 +558,14 @@ def write_sub_eur():
         ("Other Comprehensive Income",      0,            0,       0),
     ]
 
+    # ICO tab: local account codes matching sub_eur_code column in COA
+    # 5100 = Intercompany COGS (sub_eur_code)
+    # EUR amount = 30,000 USD / 1.0820 average rate ≈ 27,726 EUR
+    eur_ico = [
+        # account_no, to_party, account_type, amount, currency, description
+        ("5100", "Sub USD", "IC Revenue/COGS", round(30000 / 1.0820, 0), "EUR", "Services Q4"),
+    ]
+
     _write_subsidiary(
         SUBS_DIR / "sub_eur.xlsx",
         entity_name="Sub EUR",
@@ -544,6 +577,7 @@ def write_sub_eur():
         cf_rows=cf,
         eq_rows=eq,
         local_col="sub_eur_code",
+        ico_rows=eur_ico,
     )
     print("  sub_eur.xlsx created")
 
@@ -563,6 +597,7 @@ def _write_subsidiary(
     cf_rows: list,
     eq_rows: list,
     local_col: str,
+    ico_rows: Optional[list] = None,
 ):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -572,6 +607,7 @@ def _write_subsidiary(
     _write_statement_sheet(wb, "CF", cf_rows)
     _write_eq_sheet(wb, "EQ", eq_rows)
     _write_meta_sheet(wb, entity_name, currency, reporting_period, ownership_pct)
+    _write_ico_sheet(wb, ico_rows or [])
 
     wb.save(path)
 
@@ -587,6 +623,15 @@ def _write_statement_sheet(wb, tab_name: str, rows: list):
 def _write_eq_sheet(wb, tab_name: str, rows: list):
     ws = wb.create_sheet(tab_name)
     ws.append(["component", "opening", "movement", "closing"])
+    _bold_header(ws)
+    for row in rows:
+        ws.append(list(row))
+
+
+def _write_ico_sheet(wb, rows: list):
+    """Write ICO tab. Columns: account_no | to_party | account_type | amount | currency | description"""
+    ws = wb.create_sheet("ICO")
+    ws.append(["account_no", "to_party", "account_type", "amount", "currency", "description"])
     _bold_header(ws)
     for row in rows:
         ws.append(list(row))
